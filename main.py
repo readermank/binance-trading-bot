@@ -6,6 +6,10 @@ import os
 api_key = os.getenv("BINANCE_API_KEY")
 api_secret = os.getenv("BINANCE_API_SECRET")
 
+# 확인용 출력 (배포 시 제거!)
+print("API_KEY:", api_key)
+print("API_SECRET:", api_secret)
+
 client = Client(api_key, api_secret)
 client.API_URL = 'https://testnet.binance.vision/api'  # 반드시 설정
 
