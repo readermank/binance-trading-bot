@@ -1,89 +1,102 @@
+from flask import Flask, request
+import threading
 import os
-import pandas as pd
 from binance.client import Client
-from ta.momentum import RSIIndicator
-from ta.trend import MACD
+import pandas as pd
+import datetime as dt
 import time
 
-# API 키 불러오기 (Railway Variables 또는 .env 사용)
+app = Flask(__name__)
+
+# ✅ Binance API 설정 (.env에서 읽어옴)
 api_key = os.getenv("BINANCE_API_KEY")
 api_secret = os.getenv("BINANCE_API_SECRET")
 
 client = Client(api_key, api_secret)
-client.API_URL = 'https://testnet.binance.vision/api'
+client.API_URL = 'https://testnet.binance.vision/api'  # 테스트넷 URL
 
 symbol = "XRPUSDT"
-interval = Client.KLINE_INTERVAL_1HOUR
-lookback = "200"
+interval = Client.KLINE_INTERVAL_15MINUTE
+limit = 100
 
-def get_klines():
-    klines = client.get_historical_klines(symbol, interval, lookback + " hour ago UTC")
+# ✅ 하이브리드 전략 (MACD + RSI)
+def get_technical_signals():
+    klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
     df = pd.DataFrame(klines, columns=[
-        "time", "open", "high", "low", "close", "volume",
-        "close_time", "quote_asset_volume", "number_of_trades",
-        "taker_buy_base_vol", "taker_buy_quote_vol", "ignore"
+        'timestamp', 'open', 'high', 'low', 'close', 'volume',
+        'close_time', 'quote_asset_volume', 'number_of_trades',
+        'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
     ])
-    df["time"] = pd.to_datetime(df["time"], unit="ms")
-    df.set_index("time", inplace=True)
-    df = df.astype(float)
-    return df
+    df['close'] = df['close'].astype(float)
 
-def apply_indicators(df):
-    df["rsi"] = RSIIndicator(close=df["close"], window=14).rsi()
-    macd = MACD(close=df["close"])
-    df["macd"] = macd.macd()
-    df["macd_signal"] = macd.macd_signal()
-    df["macd_hist"] = macd.macd_diff()
-    df["volume_avg"] = df["volume"].rolling(window=20).mean()
-    return df
+    # RSI 계산
+    delta = df['close'].diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs = avg_gain / avg_loss
+    df['rsi'] = 100 - (100 / (1 + rs))
 
-def strategy_signal(df):
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
+    # MACD 계산
+    ema12 = df['close'].ewm(span=12, adjust=False).mean()
+    ema26 = df['close'].ewm(span=26, adjust=False).mean()
+    df['macd'] = ema12 - ema26
+    df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
 
-    # 조건 판단
-    macd_cross_up = prev["macd"] < prev["macd_signal"] and latest["macd"] > latest["macd_signal"]
-    macd_cross_down = prev["macd"] > prev["macd_signal"] and latest["macd"] < latest["macd_signal"]
+    last = df.iloc[-1]
 
-    rsi_buy = latest["rsi"] < 30
-    rsi_sell = latest["rsi"] > 70
+    signal = "HOLD"
+    if last['macd'] > last['signal'] and last['rsi'] < 30:
+        signal = "BUY"
+    elif last['macd'] < last['signal'] and last['rsi'] > 70:
+        signal = "SELL"
 
-    volume_filter = latest["volume"] > latest["volume_avg"]
+    print(f"[SIGNAL] RSI={last['rsi']:.2f}, MACD={last['macd']:.5f}, Signal={last['signal']:.5f} → {signal}")
+    return signal
 
-    # 종합 판단
-    if macd_cross_up and rsi_buy and volume_filter:
-        return "BUY"
-    elif macd_cross_down and rsi_sell and volume_filter:
-        return "SELL"
-    else:
-        return "HOLD"
-
+# ✅ 매수/매도 테스트 주문
 def execute_trade(signal):
     if signal == "BUY":
-        print("매수 조건 충족 → 매수 시도")
-        client.create_test_order(
-            symbol=symbol,
-            side=Client.SIDE_BUY,
-            type=Client.ORDER_TYPE_MARKET,
-            quantity=10
-        )
+        try:
+            client.create_test_order(
+                symbol=symbol,
+                side=Client.SIDE_BUY,
+                type=Client.ORDER_TYPE_MARKET,
+                quantity=10
+            )
+            print("🟢 매수 시그널: 테스트 주문 완료")
+        except Exception as e:
+            print(f"매수 실패: {e}")
     elif signal == "SELL":
-        print("매도 조건 충족 → 매도 시도")
-        client.create_test_order(
-            symbol=symbol,
-            side=Client.SIDE_SELL,
-            type=Client.ORDER_TYPE_MARKET,
-            quantity=10
-        )
+        try:
+            client.create_test_order(
+                symbol=symbol,
+                side=Client.SIDE_SELL,
+                type=Client.ORDER_TYPE_MARKET,
+                quantity=10
+            )
+            print("🔴 매도 시그널: 테스트 주문 완료")
+        except Exception as e:
+            print(f"매도 실패: {e}")
     else:
-        print("조건 불충족 → 대기 중")
+        print("⚪ HOLD: 거래 없음")
 
-def main():
-    df = get_klines()
-    df = apply_indicators(df)
-    signal = strategy_signal(df)
-    print(f"현재 전략 시그널: {signal}")
+# ✅ 실행 쓰레드
+def run_bot():
+    print(f"\n⏰ 전략 실행: {dt.datetime.now()}")
+    signal = get_technical_signals()
     execute_trade(signal)
 
+# ✅ Railway에서 호출될 엔드포인트
+@app.route("/", methods=["POST"])
+def trigger():
+    threading.Thread(target=run_bot).start()
+    return "✅ 전략 실행됨", 200
+
+@app.route("/", methods=["GET"])
+def health():
+    return "🟢 OK", 200
+
 if __name__ == "__main__":
-    main()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
