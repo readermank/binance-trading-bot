@@ -11,4 +11,4 @@ jobs:
     steps:
       - name: Send POST to Railway Webhook
         run: |
-          curl -X POST http://10.250.20.15:8080
+          curl -X POST https://worker-production-2fbd5.up.railway.app/
