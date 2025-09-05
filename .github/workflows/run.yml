@@ -1,31 +1,14 @@
-name: Run Hybrid Strategy
+name: Trigger Railway Bot
 
 on:
   schedule:
-    - cron: '0 * * * *'  # 매시 정각 (UTC)
+    - cron: '0 * * * *'  # UTC 기준 매일 12:00 (한국시간 12:00)
   workflow_dispatch:     # 수동 실행도 가능
 
 jobs:
-  build:
+  trigger:
     runs-on: ubuntu-latest
-
-    env:
-      BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
-      BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
+      - name: Send POST to Railway Webhook
         run: |
-          pip install -r requirements.txt
-
-      - name: Run bot
-        run: |
-          python main.py
+          curl -X POST http://10.250.20.15:8080
